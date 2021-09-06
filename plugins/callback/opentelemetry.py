@@ -35,6 +35,13 @@ DOCUMENTATION = '''
           - The service name resource attribute.
         env:
           - name: OTEL_SERVICE_NAME
+      traceparent:
+        default: None
+        type: str
+        description:
+          - A valid trace identifier to be used as the parent trace.
+        env:
+          - name: TRACEPARENT
     requirements:
       - opentelemetry-api (python lib)
       - opentelemetry-exporter-otlp (python lib)
@@ -71,6 +78,7 @@ from ansible.plugins.callback import CallbackBase
 try:
     from opentelemetry import trace
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
     from opentelemetry.sdk.resources import SERVICE_NAME, Resource
     from opentelemetry.trace.status import Status, StatusCode
     from opentelemetry.sdk.trace import TracerProvider
@@ -97,6 +105,7 @@ except ImportError:
 else:
     ORDER_LIBRARY_IMPORT_ERROR = None
 
+
 class OpenTelemetrySource(object):
     def __init__(self, display):
         self.ansible_playbook = ""
@@ -110,6 +119,11 @@ class OpenTelemetrySource(object):
         self.user = getpass.getuser()
 
         self._display = display
+
+    def traceparent_context(self, traceparent):
+        carrier = dict()
+        carrier['traceparent'] = traceparent
+        return TraceContextTextMapPropagator().extract(carrier=carrier)
 
     def start_task(self, tasks_data, hide_task_arguments, play_name, task):
         """ record the start of a task for one or more hosts """
@@ -148,7 +162,7 @@ class OpenTelemetrySource(object):
 
         task.add_host(HostData(host_uuid, host_name, status, result))
 
-    def generate_distributed_traces(self, insecure_otel_exporter, otel_service_name, console_output, ansible_playbook, tasks_data, status):
+    def generate_distributed_traces(self, insecure_otel_exporter, otel_service_name, console_output, ansible_playbook, tasks_data, status, traceparent):
         """ generate distributed traces from the collected TaskData and HostData """
 
         tasks = []
@@ -173,7 +187,7 @@ class OpenTelemetrySource(object):
 
         tracer = trace.get_tracer(__name__)
 
-        with tracer.start_as_current_span(ansible_playbook, start_time=parent_start_time) as parent:
+        with tracer.start_as_current_span(ansible_playbook, context=self.traceparent_context(traceparent), start_time=parent_start_time) as parent:
             parent.set_status(status)
             # Populate trace metadata attributes
             if self.ansible_version is not None:
@@ -245,6 +259,7 @@ class CallbackModule(CallbackBase):
                                      Default: ansible
         OPENTELEMETRY_CONSOLE_OUTPUT (optional): Print distributed traces in the terminal.
                                      Default: false
+        TRACEPARENT (optional): A valid span identifier to be used as the parent span.
     Requires:
         opentelemetry-api
         opentelemetry-exporter-otlp
@@ -267,6 +282,7 @@ class CallbackModule(CallbackBase):
         self.tasks_data = None
         self.errors = 0
         self.disabled = False
+        self.traceparent = None
 
         if OTEL_LIBRARY_IMPORT_ERROR:
             raise_from(
@@ -312,6 +328,11 @@ class CallbackModule(CallbackBase):
 
         # See https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/exporter.md#configuration-options
         self.insecure_otel_exporter = os.getenv('OTEL_EXPORTER_OTLP_INSECURE', 'false').lower() == 'true'
+
+        # See https://github.com/open-telemetry/opentelemetry-specification/issues/740
+        self.traceparent = self.get_option('traceparent')
+        if self.traceparent is None:
+            self.traceparent = os.getenv('TRACEPARENT', None)
 
     def v2_playbook_on_start(self, playbook):
         self.ansible_playbook = basename(playbook._file_name)
@@ -377,7 +398,8 @@ class CallbackModule(CallbackBase):
         self.opentelemetry.finish_task(
             self.tasks_data,
             'included',
-            included_file
+            included_file,
+            self.traceparent
         )
 
     def v2_playbook_on_stats(self, stats):
@@ -391,7 +413,8 @@ class CallbackModule(CallbackBase):
             self.console_output,
             self.ansible_playbook,
             self.tasks_data,
-            status
+            status,
+            self.traceparent
         )
 
     def v2_runner_on_async_failed(self, result, **kwargs):
