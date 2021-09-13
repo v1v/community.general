@@ -1,7 +1,7 @@
 automerge: true
 files:
   plugins/:
-    supershipit: quidame Ajpantuso
+    supershipit: quidame
   changelogs/: {}
   changelogs/fragments/:
     support: community
@@ -134,6 +134,8 @@ files:
   $filters/random_mac.py: {}
   $filters/time.py:
     maintainers: resmo
+  $filters/unicode_normalize.py:
+    maintainers: Ajpantuso
   $filters/version_sort.py:
     maintainers: ericzolf
   $inventories/:
